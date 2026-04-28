@@ -281,10 +281,27 @@ pub async fn migrate(state_dir: String) {
     println!("Migration complete: {imported} imported, {skipped} skipped");
 }
 
-/// Export all data as JSON.
+/// Export all data as JSON or NDJSON.
+///
+/// `format`: `"json"` (default — pretty-printed bundle) or `"ndjson"` (one
+/// record per line, prefixed by a `_kind` tag — streamable / awk-friendly).
+/// Any other value is rejected up front rather than silently rendering as
+/// JSON (pre-10D B-MED-4 silently no-op'd `--format ndjson`; the daemon
+/// ignored the format param and the CLI always rendered pretty JSON).
 pub async fn export(format: &str) {
+    // P3-4 Phase 10D (B-MED-4): validate format up front; reject unknown
+    // values with an actionable error so `--format yaml` doesn't silently
+    // give a JSON dump.
+    let format_lower = format.to_ascii_lowercase();
+    if !matches!(format_lower.as_str(), "json" | "ndjson") {
+        eprintln!(
+            "error: unknown export format `{format}` (supported: json, ndjson)"
+        );
+        std::process::exit(2);
+    }
+
     let req = Request::Export {
-        format: Some(format.to_string()),
+        format: Some(format_lower.clone()),
         since: None,
     };
     match client::send(&req).await {
@@ -297,27 +314,74 @@ pub async fn export(format: &str) {
                     edges,
                 },
         }) => {
-            let output = serde_json::json!({
-                "memories": memories,
-                "files": files,
-                "symbols": symbols,
-                "edges": edges,
-                "exported_at": chrono_now(),
-                "count": {
-                    "memories": memories.len(),
-                    "files": files.len(),
-                    "symbols": symbols.len(),
-                    "edges": edges.len(),
+            if format_lower == "ndjson" {
+                // P3-4 Phase 10D (B-MED-4): newline-delimited stream — each
+                // record carries a `_kind` discriminator so consumers can
+                // route by tag. Order is stable: memories → files →
+                // symbols → edges.
+                for m in &memories {
+                    let v = serde_json::json!({"_kind": "memory", "memory": m});
+                    if let Ok(s) = serde_json::to_string(&v) {
+                        println!("{s}");
+                    }
                 }
-            });
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&output).unwrap_or_default()
-            );
+                for f in &files {
+                    let v = serde_json::json!({"_kind": "file", "file": f});
+                    if let Ok(s) = serde_json::to_string(&v) {
+                        println!("{s}");
+                    }
+                }
+                for s in &symbols {
+                    let v = serde_json::json!({"_kind": "symbol", "symbol": s});
+                    if let Ok(line) = serde_json::to_string(&v) {
+                        println!("{line}");
+                    }
+                }
+                for edge in &edges {
+                    let v = serde_json::json!({"_kind": "edge", "edge": edge});
+                    if let Ok(s) = serde_json::to_string(&v) {
+                        println!("{s}");
+                    }
+                }
+                eprintln!(
+                    "exported {} memories, {} files, {} symbols, {} edges (ndjson)",
+                    memories.len(),
+                    files.len(),
+                    symbols.len(),
+                    edges.len()
+                );
+            } else {
+                let output = serde_json::json!({
+                    "memories": memories,
+                    "files": files,
+                    "symbols": symbols,
+                    "edges": edges,
+                    "exported_at": chrono_now(),
+                    "count": {
+                        "memories": memories.len(),
+                        "files": files.len(),
+                        "symbols": symbols.len(),
+                        "edges": edges.len(),
+                    }
+                });
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&output).unwrap_or_default()
+                );
+            }
         }
-        Ok(Response::Error { message }) => eprintln!("error: {message}"),
-        Ok(_) => eprintln!("unexpected response"),
-        Err(e) => eprintln!("error: {e}"),
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -850,12 +914,25 @@ pub async fn record_tool_use(
     success: bool,
     user_correction_flag: bool,
 ) {
-    let tool_args: serde_json::Value = serde_json::from_str(&tool_args_json).unwrap_or_else(|_| {
-        // Preserve the raw string as a JSON string so Phase 23 can still
-        // infer arg-keys from well-formed callers; malformed JSON from the
-        // hook path is usually due to sed escaping, not data loss.
-        serde_json::Value::String(tool_args_json.clone())
-    });
+    let tool_args: serde_json::Value = match serde_json::from_str(&tool_args_json) {
+        Ok(v) => v,
+        Err(e) => {
+            // P3-4 Phase 10D (B-MED-7): pre-10D this was `unwrap_or_else`
+            // with no signal. Surface a single-line stderr warning so hook
+            // authors see the parse failure during dogfood. We still fall
+            // back to a JSON-string preserve so the daemon's Phase 23
+            // arg-key inference doesn't lose the call entirely. Keep the
+            // hook-path fire-and-forget contract: write to stderr, do not
+            // exit non-zero (post-bash.sh shells out to this and a
+            // non-zero would block the user's command).
+            eprintln!(
+                "record-tool-use: WARN tool_args_json failed to parse as JSON ({e}); \
+                 storing raw string as a JSON String — likely sed/quote escaping in caller. \
+                 Tool: {tool_name}"
+            );
+            serde_json::Value::String(tool_args_json.clone())
+        }
+    };
 
     match client::send(&Request::RecordToolUse {
         session_id,
@@ -1123,11 +1200,11 @@ pub async fn list_messages(
                     println!("{parts_text}");
                     println!();
                 } else {
-                    let preview = if parts_text.len() > 80 {
-                        &parts_text[..80]
-                    } else {
-                        &parts_text
-                    };
+                    // P3-4 Phase 10D (B-MED-2): use char-boundary-safe truncation
+                    // — raw `&parts_text[..80]` panics on multibyte UTF-8 (e.g.
+                    // a Japanese topic body) and crashes the entire `messages`
+                    // listing on the first such row.
+                    let preview = crate::commands::util::truncate_preview(&parts_text, 80);
                     // W1.32 (W28 review NIT-3): widen the truncated ID
                     // display from 8 → 12 chars. ULIDs are time-ordered:
                     // 8 chars covers ~40 bits of timestamp prefix, so
@@ -1144,7 +1221,7 @@ pub async fn list_messages(
                         id = display_id,
                         from = m.from_session,
                         topic = m.topic,
-                        preview = preview
+                        preview = preview.as_str()
                     );
                 }
             }

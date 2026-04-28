@@ -99,11 +99,9 @@ pub async fn get_agent_template(id: Option<String>, name: Option<String>) {
             println!("  Org:         {}", template.organization_id);
             println!("  Decision:    {}", template.decision_style);
             if !template.system_context.is_empty() {
-                let preview = if template.system_context.len() > 80 {
-                    format!("{}...", &template.system_context[..80])
-                } else {
-                    template.system_context.clone()
-                };
+                // P3-4 Phase 10D (B-MED-2): char-boundary-safe preview.
+                let preview =
+                    crate::commands::util::truncate_preview(&template.system_context, 80);
                 println!("  Context:     {preview}");
             }
             println!("  Created:     {}", template.created_at);
@@ -134,6 +132,114 @@ pub async fn delete_agent_template(id: String) {
                 println!("Template deleted: {}", &id[..13.min(id.len())]);
             } else {
                 println!("Template not found: {}", &id[..13.min(id.len())]);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Update fields on an agent template (P3-4 Phase 10D / B-MED-5).
+/// Only sends fields the operator actually passed; unset fields default
+/// to `None` and the daemon leaves them unchanged.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_agent_template(
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    system_context: Option<String>,
+    identity_facets: Option<String>,
+    config_overrides: Option<String>,
+    knowledge_domains: Option<String>,
+    decision_style: Option<String>,
+) {
+    if name.is_none()
+        && description.is_none()
+        && system_context.is_none()
+        && identity_facets.is_none()
+        && config_overrides.is_none()
+        && knowledge_domains.is_none()
+        && decision_style.is_none()
+    {
+        eprintln!(
+            "error: agent-template update requires at least one field flag \
+             (--name / --description / --system-context / --identity-facets / \
+             --config-overrides / --knowledge-domains / --decision-style)"
+        );
+        std::process::exit(2);
+    }
+    let req = Request::UpdateAgentTemplate {
+        id: id.clone(),
+        name,
+        description,
+        system_context,
+        identity_facets,
+        config_overrides,
+        knowledge_domains,
+        decision_style,
+    };
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::AgentTemplateUpdated { id, updated },
+        }) => {
+            if updated {
+                println!("Template updated: {}", &id[..13.min(id.len())]);
+            } else {
+                println!("Template not found: {}", &id[..13.min(id.len())]);
+                std::process::exit(1);
+            }
+        }
+        Ok(Response::Error { message }) => {
+            eprintln!("error: {message}");
+            std::process::exit(1);
+        }
+        Ok(_) => {
+            eprintln!("unexpected response");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// List pre-built team templates seeded on daemon boot
+/// (P3-4 Phase 10D / B-MED-6).
+pub async fn list_team_templates() {
+    let req = Request::ListTeamTemplates;
+    match client::send(&req).await {
+        Ok(Response::Ok {
+            data: ResponseData::TeamTemplateList { templates, count },
+        }) => {
+            if count == 0 {
+                println!("No team templates seeded.");
+                return;
+            }
+            println!("{count} team template(s):");
+            for t in &templates {
+                let name = t.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let description = t
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let team_type = t.get("team_type").and_then(|v| v.as_str()).unwrap_or("?");
+                let topology = t.get("topology").and_then(|v| v.as_str()).unwrap_or("?");
+                println!("  {name} [{team_type}/{topology}]");
+                if !description.is_empty() {
+                    let desc = crate::commands::util::truncate_preview(description, 100);
+                    println!("    {desc}");
+                }
             }
         }
         Ok(Response::Error { message }) => {
@@ -714,11 +820,8 @@ pub async fn meeting_status(meeting_id: String) {
             println!("  Topic: {topic}");
             if let Some(ctx) = meeting.get("context").and_then(|v| v.as_str()) {
                 if !ctx.is_empty() {
-                    let preview = if ctx.len() > 80 {
-                        format!("{}...", &ctx[..80])
-                    } else {
-                        ctx.to_string()
-                    };
+                    // P3-4 Phase 10D (B-MED-2): char-boundary-safe preview.
+                    let preview = crate::commands::util::truncate_preview(ctx, 80);
                     println!("  Context: {preview}");
                 }
             }

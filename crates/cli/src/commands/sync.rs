@@ -372,9 +372,10 @@ pub async fn hlc_backfill() {
 }
 
 fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max])
-    }
+    // P3-4 Phase 10D (B-MED-2): delegate to the shared char-boundary-safe
+    // helper. Prior implementation used `&s[..max]` which panics on
+    // multibyte UTF-8 (e.g. a sync conflict whose memory title contains
+    // CJK or Cyrillic glyphs would crash `forge-next sync conflicts`
+    // entirely).
+    crate::commands::util::truncate_preview(s, max)
 }

@@ -45,7 +45,7 @@ COMMAND CATEGORIES:
   Messaging (A2A FISP):      send, messages, respond, message-read, ack, grant-permission, revoke-permission, list-permissions, entities
   Projects & Indexing:       project, code-search, force-index, contradictions, resolve-contradiction, verify, diagnostics
   Sync & Maintenance:        sync-export, sync-import, sync-pull, sync-push, sync-conflicts, sync-resolve, hlc-backfill, backfill-project, cleanup-memory, backfill-affects
-  Agents & Teams:            agent-template, agent, agents, agent-status, team, meeting
+  Agents & Teams:            agent-template, team-template, agent, agents, agent-status, team, meeting
   Notifications & Events:    notifications, ack-notification, dismiss-notification, act-notification, subscribe, session-heartbeat, context-refresh, completion-check, task-completion-check, context-stats
   Organizations & Workspace: org-create, org-list, org-from-template, org-init, team-tree, team-send, workspace-status, set-task
   Healing:                   healing-status, healing-run, healing-log
@@ -775,6 +775,13 @@ enum Commands {
         action: AgentTemplateAction,
     },
 
+    /// Manage pre-built team templates (P3-4 Phase 10D / B-MED-6).
+    #[command(name = "team-template")]
+    TeamTemplate {
+        #[command(subcommand)]
+        action: TeamTemplateAction,
+    },
+
     /// Spawn an agent from a template
     #[command(name = "agent")]
     Agent {
@@ -853,10 +860,17 @@ enum Commands {
         #[arg(long)]
         id: String,
         /// Approve the action
-        #[arg(long, conflicts_with = "reject")]
+        ///
+        /// NOTE: per `feedback_clap_conflicts_with_stack_overflow.md`,
+        /// `conflicts_with` on bool fields blew the parser stack on every
+        /// `Cli::try_parse_from` (Y6 / `f056655`). The mutual exclusion
+        /// is enforced in the runtime dispatch (P3-4 Phase 10D / B-MED-8)
+        /// — passing both `--approve` and `--reject` exits non-zero with
+        /// a clear error.
+        #[arg(long)]
         approve: bool,
-        /// Reject the action
-        #[arg(long, conflicts_with = "approve")]
+        /// Reject the action (mutually exclusive with --approve; enforced in handler).
+        #[arg(long)]
         reject: bool,
     },
 
@@ -1267,6 +1281,41 @@ enum AgentTemplateAction {
         #[arg(long)]
         id: String,
     },
+    /// Update fields on an agent template (P3-4 Phase 10D / B-MED-5).
+    /// Pass only the fields you want to change; omit to leave unchanged.
+    Update {
+        /// Template ID to update
+        #[arg(long)]
+        id: String,
+        /// New name
+        #[arg(long)]
+        name: Option<String>,
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+        /// New system context / prompt
+        #[arg(long, name = "system-context")]
+        system_context: Option<String>,
+        /// New identity facets as JSON array
+        #[arg(long, name = "identity-facets")]
+        identity_facets: Option<String>,
+        /// New config overrides as JSON object
+        #[arg(long, name = "config-overrides")]
+        config_overrides: Option<String>,
+        /// New knowledge domains as JSON array
+        #[arg(long, name = "knowledge-domains")]
+        knowledge_domains: Option<String>,
+        /// New decision style
+        #[arg(long, name = "decision-style")]
+        decision_style: Option<String>,
+    },
+}
+
+/// `forge-next team-template …` action set (P3-4 Phase 10D / B-MED-6).
+#[derive(Subcommand, Debug)]
+enum TeamTemplateAction {
+    /// List the pre-built team templates seeded on daemon boot.
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2250,6 +2299,33 @@ async fn main() {
             AgentTemplateAction::Delete { id } => {
                 commands::teams::delete_agent_template(id).await;
             }
+            AgentTemplateAction::Update {
+                id,
+                name,
+                description,
+                system_context,
+                identity_facets,
+                config_overrides,
+                knowledge_domains,
+                decision_style,
+            } => {
+                commands::teams::update_agent_template(
+                    id,
+                    name,
+                    description,
+                    system_context,
+                    identity_facets,
+                    config_overrides,
+                    knowledge_domains,
+                    decision_style,
+                )
+                .await;
+            }
+        },
+        Commands::TeamTemplate { action } => match action {
+            TeamTemplateAction::List => {
+                commands::teams::list_team_templates().await;
+            }
         },
         Commands::Agent { action } => match action {
             AgentAction::Spawn {
@@ -2345,21 +2421,85 @@ async fn main() {
                     choice,
                 };
                 match client::send(&req).await {
-                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                    Ok(forge_core::protocol::Response::Error { message }) => {
-                        eprintln!("Error: {message}")
+                    // P3-4 Phase 10D (B-MED-1): structured render replaces
+                    // raw `{data:?}` Debug print, which exposed internal
+                    // enum variant names to operators.
+                    Ok(forge_core::protocol::Response::Ok {
+                        data:
+                            forge_core::protocol::ResponseData::MeetingVoteRecorded {
+                                meeting_id,
+                                choice,
+                            },
+                    }) => {
+                        println!(
+                            "Vote recorded for meeting {} → {choice}",
+                            &meeting_id[..13.min(meeting_id.len())]
+                        );
                     }
-                    Err(e) => eprintln!("Connection error: {e}"),
+                    Ok(forge_core::protocol::Response::Ok { data }) => {
+                        eprintln!("unexpected response shape: {data:?}");
+                        std::process::exit(1);
+                    }
+                    Ok(forge_core::protocol::Response::Error { message }) => {
+                        eprintln!("Error: {message}");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Connection error: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
             MeetingAction::Result { id } => {
                 let req = forge_core::protocol::Request::MeetingResult { meeting_id: id };
                 match client::send(&req).await {
-                    Ok(forge_core::protocol::Response::Ok { data }) => println!("{data:?}"),
-                    Ok(forge_core::protocol::Response::Error { message }) => {
-                        eprintln!("Error: {message}")
+                    // P3-4 Phase 10D (B-MED-1): structured render — the daemon
+                    // already returns counts + quorum status; render those
+                    // line-by-line instead of dumping the Debug repr.
+                    Ok(forge_core::protocol::Response::Ok {
+                        data:
+                            forge_core::protocol::ResponseData::MeetingResultData {
+                                meeting_id,
+                                outcome,
+                                votes,
+                                quorum_met,
+                                total_votes,
+                                required_votes,
+                            },
+                    }) => {
+                        println!("Meeting: {}", &meeting_id[..13.min(meeting_id.len())]);
+                        println!(
+                            "  Outcome:        {}",
+                            outcome.as_deref().unwrap_or("(undecided)")
+                        );
+                        println!(
+                            "  Votes:          {total_votes} of {required_votes} required (quorum: {})",
+                            if quorum_met { "met" } else { "not met" }
+                        );
+                        if votes.is_empty() {
+                            println!("  Tally:          (no votes yet)");
+                        } else {
+                            println!("  Tally:");
+                            // Stable order: descending count, then alphabetical key.
+                            let mut tally: Vec<(&String, &usize)> = votes.iter().collect();
+                            tally.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+                            for (choice, count) in tally {
+                                println!("    {choice:<24} {count}");
+                            }
+                        }
                     }
-                    Err(e) => eprintln!("Connection error: {e}"),
+                    Ok(forge_core::protocol::Response::Ok { data }) => {
+                        eprintln!("unexpected response shape: {data:?}");
+                        std::process::exit(1);
+                    }
+                    Ok(forge_core::protocol::Response::Error { message }) => {
+                        eprintln!("Error: {message}");
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        eprintln!("Connection error: {e}");
+                        std::process::exit(1);
+                    }
                 }
             }
         },
@@ -2383,7 +2523,28 @@ async fn main() {
             approve,
             reject,
         } => {
-            let approved = if reject { false } else { approve };
+            // P3-4 Phase 10D (B-MED-8): pre-10D `if reject { false } else
+            // { approve }` mapped the all-defaults case (`act-notification
+            // --id X` with neither flag) to `approved=false` — silently
+            // rejecting. The previous `conflicts_with` on the bool fields
+            // tripped clap's stack-overflow bug, so mutual exclusion now
+            // lives here too.
+            if approve && reject {
+                eprintln!(
+                    "error: --approve and --reject are mutually exclusive (pass exactly one)"
+                );
+                std::process::exit(2);
+            }
+            if !approve && !reject {
+                eprintln!(
+                    "error: act-notification requires --approve or --reject; \
+                     pre-10D the bare form silently rejected. Pass one of:\n  \
+                     forge-next act-notification --id {id} --approve\n  \
+                     forge-next act-notification --id {id} --reject"
+                );
+                std::process::exit(2);
+            }
+            let approved = approve; // exclusivity enforced above
             commands::teams::act_on_notification(id, approved).await;
         }
 
