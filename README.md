@@ -37,9 +37,12 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 ## Quick Start
 
 ```bash
-# 1. Install from source. The two crate args produce three binaries:
-#    forge-daemon + forge-bench (from crate `forge-daemon`),
-#    forge-next (from crate `forge-cli`).
+# 1. Install from source. The two crate args produce two binaries:
+#    forge-daemon (from crate `forge-daemon`) and forge-next (from
+#    crate `forge-cli`). The `forge-bench` binary lives in the same
+#    daemon crate but is gated on `--features bench` and ships only
+#    when you build the bench harness explicitly:
+#      cargo install --git <url> forge-daemon --features bench --bin forge-bench
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
 # 2. Start the daemon. Default transport is the Unix socket at
@@ -249,6 +252,9 @@ cargo clippy --workspace -- -W clippy::all -D warnings
 # Install binaries to ~/.cargo/bin
 cargo install --path crates/daemon
 cargo install --path crates/cli
+
+# Optional: also install the bench harness (bench-corpus dev only)
+cargo install --path crates/daemon --features bench --bin forge-bench
 ```
 
 ### Requirements
