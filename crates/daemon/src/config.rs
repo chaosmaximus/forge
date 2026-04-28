@@ -1779,6 +1779,17 @@ pub fn update_config_at(path: &str, key: &str, value: &str) -> Result<(), String
     // preserving all other user settings (ISS-9 fix).
     // Determine the correct typed TOML value by comparing old vs new config.
     let parts: Vec<&str> = key.split('.').collect();
+    // P3-4 Phase 10G (audit A-009): the `project.*` user-facing alias
+    // resolves to the same `[reality]` section on disk so the reader
+    // (which only knows the canonical name) sees the value. Normalize
+    // here so the write-back machinery stays section-aware. The
+    // internal Rust struct + on-disk TOML section name remain
+    // `[reality]` per `feedback_project_everywhere_vocabulary.md`.
+    let parts: Vec<&str> = parts
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| if i == 0 && p == "project" { "reality" } else { p })
+        .collect();
     let toml_table = table.as_table_mut().ok_or("config is not a TOML table")?;
 
     // Derive TOML value type from the typed config field (not string guessing).
@@ -2975,6 +2986,45 @@ offline_jwks_path = "/etc/forge/jwks.json"
         // Invalid value should error
         let err = update_config_at(path_str, "reality.auto_detect", "not_a_bool");
         assert!(err.is_err());
+    }
+
+    /// P3-4 Phase 10G (audit A-009): the user-facing `project.*` config
+    /// namespace must write the same fields as the legacy `reality.*`
+    /// form. This regression pins both routes.
+    ///
+    /// Adversarial review LOW-2 (Phase 10): pre-test, the dual-write
+    /// alias was correct by inspection but had no automated proof.
+    #[test]
+    fn project_alias_writes_same_fields_as_reality() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let path_str = path.to_str().unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        // Write each field via `project.*` and confirm the loaded
+        // RealityConfig reflects the new value.
+        update_config_at(path_str, "project.auto_detect", "false").unwrap();
+        update_config_at(path_str, "project.code_embeddings", "true").unwrap();
+        update_config_at(path_str, "project.community_detection", "false").unwrap();
+        update_config_at(path_str, "project.max_index_files", "12345").unwrap();
+
+        let cfg = load_config_from(path_str);
+        assert!(!cfg.reality.auto_detect, "project.auto_detect");
+        assert!(cfg.reality.code_embeddings, "project.code_embeddings");
+        assert!(
+            !cfg.reality.community_detection,
+            "project.community_detection"
+        );
+        assert_eq!(cfg.reality.max_index_files, 12345, "project.max_index_files");
+
+        // Round-trip: writing via `reality.*` then reading should reflect
+        // the canonical value too.
+        update_config_at(path_str, "reality.auto_detect", "true").unwrap();
+        let cfg2 = load_config_from(path_str);
+        assert!(
+            cfg2.reality.auto_detect,
+            "reality.auto_detect overrides project.auto_detect via the same field"
+        );
     }
 
     // -----------------------------------------------------------------------

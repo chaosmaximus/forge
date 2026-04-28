@@ -42,7 +42,10 @@ Forge is an always-on daemon that gives AI agents persistent memory, intelligent
 #    forge-next (from crate `forge-cli`).
 cargo install --git https://github.com/chaosmaximus/forge forge-daemon forge-cli
 
-# 2. Start the daemon (runs on port 8420)
+# 2. Start the daemon. Default transport is the Unix socket at
+#    ~/.forge/forge.sock. Set `[http] enabled = true` in
+#    ~/.forge/config.toml (auto-created on first run) to also bind
+#    HTTP on port 8420.
 forge-daemon &
 
 # 3. Bootstrap from your existing Claude Code / Codex / Cursor transcripts
@@ -62,7 +65,7 @@ forge-next recall "auth"
 #    ╰──────────────────────────────────────────────────╯
 ```
 
-The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context to agents on demand. The default transport is the Unix socket at `~/.forge/forge.sock`; HTTP at `localhost:8420/api` is opt-in via `[http] enabled = true` in `~/.forge/config.toml` (audit DOCS-A-017 / Phase 11 clarification — pre-fix the doc implied HTTP was always-on).
+The daemon runs in the background. It extracts memories from every agent session, builds a knowledge graph, and serves context to agents on demand. The default transport is the Unix socket at `~/.forge/forge.sock`; HTTP at `localhost:8420/api` is opt-in via `[http] enabled = true` in `~/.forge/config.toml`.
 
 ---
 
@@ -73,10 +76,12 @@ The daemon runs in the background. It extracts memories from every agent session
 │ Your Agent           │
 │ (Claude, Codex, etc.)│
 └──────────┬───────────┘
-           │ HTTP /api
+           │ Unix socket: ~/.forge/forge.sock  (default)
+           │ HTTP:        localhost:8420/api   (opt-in)
+           │ gRPC:        localhost:8421       (server-side)
            ▼
 ┌──────────────────────────────────────────┐
-│ forge-daemon  (Rust · port 8420)         │
+│ forge-daemon  (Rust · multi-transport)   │
 │                                          │
 │  • 100+ protocol endpoints               │
 │  • 8-layer Manas memory engine           │

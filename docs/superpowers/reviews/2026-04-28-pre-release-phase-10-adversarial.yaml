@@ -1,0 +1,240 @@
+schema_version: 1
+slug: 2026-04-28-pre-release-phase-10-adversarial
+target_paths:
+  - crates/cli/src/main.rs
+  - crates/cli/src/commands/mod.rs
+  - crates/cli/src/commands/util.rs
+  - crates/cli/src/commands/system.rs
+  - crates/cli/src/commands/sync.rs
+  - crates/cli/src/commands/teams.rs
+  - crates/cli/src/commands/manas.rs
+  - crates/cli/src/commands/observe.rs
+  - crates/daemon/src/main.rs
+  - crates/daemon/src/server/handler.rs
+  - crates/daemon/src/server/metrics.rs
+  - crates/daemon/src/workers/embedder.rs
+  - crates/daemon/src/workers/mod.rs
+  - crates/daemon/src/db/ops.rs
+  - crates/daemon/src/db/schema.rs
+  - crates/daemon/src/db/diagnostics.rs
+  - crates/daemon/src/sync.rs
+  - crates/daemon/src/config.rs
+  - crates/daemon/src/extraction/router.rs
+  - crates/daemon/src/notifications.rs
+  - crates/daemon/src/proactive.rs
+  - crates/daemon/src/lsp/regex_python.rs
+  - crates/daemon/src/lsp/regex_go.rs
+  - deploy/grafana/forge-operator-dashboard.json
+  - docs/getting-started.md
+  - docs/api-reference.md
+  - docs/cli-reference.md
+  - docs/operations.md
+  - docs/observability/otlp-validation.md
+  - scripts/install.sh
+  - .claude-plugin/plugin.json
+reviewer:
+  agent: claude-general-purpose
+  date: 2026-04-28
+commit_range:
+  base: 4f339fd
+  head: fe8054d
+verdict: lockable-as-is
+artifacts:
+  - kind: review-transcript
+    path: docs/superpowers/reviews/2026-04-28-pre-release-phase-10-adversarial.md
+findings:
+  - id: LOW-1
+    severity: LOW
+    summary: F-MED-11 freeze-on-zero only wired for embedder; 7 other workers cannot flip ForgeWorkerDown
+    file: crates/daemon/src/workers/mod.rs
+    status: deferred
+    rationale: |
+      The freeze-on-zero plumbing in `refresh_gauges_impl` is correct and
+      the embedder shutdown path now sets `forge_worker_healthy{worker="embedder"} = 0`
+      so the `ForgeWorkerDown` alert can fire for the embedder. The other
+      7 workers (watcher / extractor / consolidator / indexer / perception
+      / disposition / diagnostics) never call `set_worker_unhealthy` and
+      so their `ForgeWorkerDown` alert remains effectively un-triggerable.
+      Commit body explicitly calls this out as "minimum viable wiring as
+      of Phase 10E … full propagation is Phase 10E follow-up." The audit's
+      specific case (alert can NEVER fire) is closed; expanding to all
+      workers is queued for a fix-wave / Phase 10E.fw1 / v0.6.1.
+  - id: LOW-2
+    severity: LOW
+    summary: A-009 dual-write match arm has no regression test pinning both `reality.*` and `project.*` write the same field
+    file: crates/daemon/src/config.rs
+    status: open
+    rationale: |
+      `update_config_at` was extended with `["reality", X] | ["project", X]`
+      match arms for 4 keys (auto_detect / code_embeddings /
+      community_detection / max_index_files), but the existing test
+      `test_reality_config_update_at` (config.rs:2957) only exercises the
+      legacy `reality.*` route. No test calls e.g.
+      `update_config_at(path, "project.auto_detect", "false")` and asserts
+      `cfg.reality.auto_detect == false`. The match arm is correct by
+      inspection (single body shared across both patterns) but if the arms
+      are ever split, the regression would be silent. Recommended ~15-line
+      test for fix-wave; not release-blocking.
+  - id: LOW-3
+    severity: LOW
+    summary: B-MED-8 act-notification mutual-exclusion runtime check not pinned by test
+    file: crates/cli/src/main.rs
+    status: deferred
+    rationale: |
+      The runtime mutual-exclusion check at main.rs:2528-2548 enforces
+      `--approve` xor `--reject` (with non-zero exit + actionable message
+      for both-set / neither-set cases). No regression test pins this; a
+      test would have to live outside `crates/cli/src/main.rs` because
+      `tests::test_*` parse helpers in main.rs hit the pre-existing clap
+      parser-stack overflow (Phase 11 backlog). Defer or write as a
+      shell-level integration test in `tests/scripts/`.
+  - id: LOW-4
+    severity: LOW
+    summary: E-14 close is doc-only — comment block explaining why pattern works, no behavior change
+    file: crates/daemon/src/sync.rs
+    status: resolved
+    fixed_by: fe8054d
+    rationale: |
+      The audit's claim was that `conn.execute` inside a body wrapped by
+      `let tx = conn.unchecked_transaction()?;` might not be transactional.
+      SQLite has one active transaction per connection, so writes via the
+      same `Connection` while `tx` is alive ARE part of the active tx —
+      switching to `tx.execute` is cosmetically clearer but functionally
+      identical, and `remember_raw(conn, ...)` takes `&Connection` which
+      `Transaction` derefs into. Commit response is a 12-line invariant
+      comment block. Documented as a deliberate doc-only close so future
+      reviewers don't re-flag it.
+  - id: NIT-1
+    severity: NIT
+    summary: F-MED-9 docs reference `tracing::warn!` but code uses `eprintln!`
+    file: docs/observability/otlp-validation.md
+    status: open
+    rationale: |
+      `docs/observability/otlp-validation.md:91` says "the daemon emits a
+      `tracing::warn!` line" but the actual code at
+      `crates/daemon/src/main.rs:225` uses `eprintln!("[daemon] WARN: ...")`
+      because the tracing subscriber isn't installed yet at that point in
+      startup (commit body acknowledges this). Doc text is wrong but not
+      user-confusing — operators grepping for the warn substring find it
+      either way. Update doc to say "stderr WARN line" or `eprintln!`.
+spec_compliance:
+  - audit_id: B-MED-1
+    claim: structured render for meeting vote/result (no raw `{:?}` Debug)
+    verified: true
+    evidence: "git show eabcea4 -- crates/cli/src/main.rs (lines 2421-2510); MeetingVoteRecorded + MeetingResultData branches render line-by-line"
+  - audit_id: B-MED-2
+    claim: char-boundary-safe truncation at 4 sites + shared helper + 6 unit tests
+    verified: true
+    evidence: "crates/cli/src/commands/util.rs new file (69 LOC, 6 tests); call sites swept in system.rs:1200, teams.rs:103,820, sync.rs:374"
+  - audit_id: B-MED-4
+    claim: ndjson real implementation + format-validation up front
+    verified: true
+    evidence: "crates/cli/src/commands/system.rs:284-380; `_kind` discriminator on each record; exit 2 on unknown format"
+  - audit_id: B-MED-5
+    claim: agent-template update CLI surface for Request::UpdateAgentTemplate
+    verified: true
+    evidence: "main.rs:1284-1316 AgentTemplateAction::Update + teams.rs::update_agent_template; rejects bare invocation with exit 2"
+  - audit_id: B-MED-6
+    claim: team-template list top-level CLI for Request::ListTeamTemplates
+    verified: true
+    evidence: "main.rs:778-784 TeamTemplate command + teams.rs::list_team_templates; harness-sync gate now reports 109 CLI subcommands (was 108)"
+  - audit_id: B-MED-7
+    claim: record-tool-use stderr WARN on JSON parse failure
+    verified: true
+    evidence: "system.rs:917-936 match Err branch with eprintln! + fallback to JSON String preserve"
+  - audit_id: B-MED-8
+    claim: act-notification mutual exclusion in handler (conflicts_with removed per Y6 trap)
+    verified: true
+    evidence: "main.rs:858-874 conflicts_with attribute removed; main.rs:2521-2548 runtime check with exit 2 for both-set / neither-set"
+  - audit_id: F-MED-1
+    claim: RPATH onnxruntime-1.23.0 verified-no-op
+    verified: true
+    evidence: "commit body: .cargo/config.toml already uses relocatable RPATH per X2 RPATH bake-in (task #220 / #230); 1.23.0 is bundled tool version, not baked path"
+  - audit_id: F-MED-2
+    claim: install.sh macOS error message uses forge-next not forge-cli
+    verified: true
+    evidence: "scripts/install.sh:34 one-token swap"
+  - audit_id: F-MED-3
+    claim: Grafana dashboard datasource templated via ${DS_PROMETHEUS} / ${DS_SQLITE}
+    verified: true
+    evidence: "deploy/grafana/forge-operator-dashboard.json: __inputs block declares both datasources; all 9 panels use templated datasource form"
+  - audit_id: F-MED-4
+    claim: otlp-validation.md fictional `forge-next service restart` replaced with real workflow
+    verified: true
+    evidence: "docs/observability/otlp-validation.md:33-41 pkill -INT + cargo run + systemctl --user restart + launchctl kickstart variants"
+  - audit_id: F-MED-6
+    claim: docs note that forge-next plugin install/uninstall doesn't exist
+    verified: true
+    evidence: "docs/getting-started.md:301-309 explicit note pointing at /plugin marketplace UI + Option A symlink-install"
+  - audit_id: F-MED-7
+    claim: compile-context labels XML sections instead of layers
+    verified: true
+    evidence: "crates/cli/src/commands/manas.rs:354-364 \"({layers_used} XML sections, {chars} chars)\""
+  - audit_id: F-MED-8
+    claim: doctor warns embedder stall with fix hint
+    verified: true
+    evidence: "crates/daemon/src/server/handler.rs:1773-1783 message includes `forge-next observe row-count --table memory_vec` + phase-summary hint"
+  - audit_id: F-MED-9
+    claim: OTLP empty-endpoint warn line
+    verified: true
+    evidence: "crates/daemon/src/main.rs:215-228 eprintln! WARN block with canonical endpoint hint (note NIT-1: docs say tracing::warn!, code uses eprintln!)"
+  - audit_id: F-MED-10
+    claim: observe row-count empty-snapshot diagnostic instead of generic (no rows)
+    verified: true
+    evidence: "crates/cli/src/commands/observe.rs:235-263 snapshot-may-be-stale message with gauge-snapshot pointer"
+  - audit_id: F-MED-11
+    claim: forge_worker_healthy freeze-on-zero + embedder shutdown wiring
+    verified: true
+    evidence: "metrics.rs:584-588 freeze-on-zero conditional; metrics.rs:336-346 set_worker_unhealthy/healthy helpers; embedder.rs:38-41 shutdown hook; test_set_worker_unhealthy_sets_zero pins behavior. PARTIAL: only embedder wired (LOW-1)"
+  - audit_id: F-MED-12
+    claim: first-run config seed from bundled config/default.toml
+    verified: true
+    evidence: "crates/daemon/src/main.rs:266-288 absence-gated fs::write + include_str!; runs after create_dir_all so directory always exists; never overwrites"
+  - audit_id: C-MED-1
+    claim: delete unreferenced extraction::router::check_quality_guard
+    verified: true
+    evidence: "git show 7c5dc4d -- crates/daemon/src/extraction/router.rs: -44 LOC removal of check_quality_guard fn"
+  - audit_id: C-MED-5
+    claim: db::diagnostics::expire_diagnostics downgraded to #[cfg(test)] fn
+    verified: true
+    evidence: "db/diagnostics.rs:83-90 cfg(test) attribute + pub→fn"
+  - audit_id: C-MED-6
+    claim: notifications::count_pending + proactive::should_surface downgraded to cfg(test)
+    verified: true
+    evidence: "notifications.rs:266 + proactive.rs:375 both cfg(test) + pub→fn"
+  - audit_id: C-MED-7
+    claim: drop duplicate Python+Go extract_imports_* (canonical in lsp::symbols::extract_imports)
+    verified: true
+    evidence: "git show 7c5dc4d: -91 LOC across lsp/regex_python.rs (-31) + lsp/regex_go.rs (-54) + LazyLock regex consts"
+  - audit_id: E-14
+    claim: doc-only — explain conn.execute inside unchecked_transaction is functionally correct
+    verified: true
+    evidence: "sync.rs:425-440 12-line comment block explaining SQLite one-tx-per-connection invariant; no behavior change (LOW-4)"
+  - audit_id: E-17
+    claim: NULL line_start backfill to 1 + list_symbols decode unwrap_or(1)
+    verified: true
+    evidence: "schema.rs:1180-1191 UPDATE migration with `?` propagation; ops.rs:1493-1498 unwrap_or(1) sentinel; idempotent (re-run no-op); indexer.rs:631 saturating_sub behavior unchanged for both 0 and 1"
+  - audit_id: A-009
+    claim: project.* config aliases write same field as reality.*
+    verified: true
+    evidence: "crates/daemon/src/config.rs:1722-1738 four match arms `[reality, X] | [project, X]`; doc table updated in cli-reference.md:507. NO TEST pins dual-write contract (LOW-2)"
+  - audit_id: A-010
+    claim: task_completion_check section added to api-reference.md::Notifications
+    verified: true
+    evidence: "docs/api-reference.md:2479-2520 new section with Request shape, fields, Response shape, CLI form"
+  - audit_id: A-012
+    claim: drop Auto-installs on first use claim
+    verified: true
+    evidence: ".claude-plugin/plugin.json:4 description string trimmed; marketplace.json never had the string (audit cited wrong file but the same fictional claim was in plugin.json)"
+  - audit_id: A-014
+    claim: replace internal phase tags in user-facing docs
+    verified: true
+    evidence: "cli-reference.md:778-783 Observability API + footnote retain; api-reference.md:2634-2639 same; operations.md:375 trailing tag removed"
+  - audit_id: C-MED-2
+    claim: false positive — recall.rs wrappers ARE called from prod
+    verified: true
+    evidence: "commit body: hybrid_recall_scoped called from prod hybrid_recall_with_globals; compile_static_prefix/dynamic_suffix called from prod compile_context. Audit was wrong; cfg(test) would break compilation"
+  - audit_id: E-18
+    claim: false positive — notification.reality_id never crosses the wire
+    verified: true
+    evidence: "commit body: Notification struct in notifications.rs:4 has 16 fields, none is reality_id; SELECT at line 128 doesn't include the column. Column exists in DB but only on internal NotificationBuilder"

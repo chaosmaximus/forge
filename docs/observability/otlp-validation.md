@@ -90,11 +90,15 @@ In Jaeger UI:
 ### 1. `FORGE_OTLP_ENABLED=true` but no traces appear
 
 Check that `FORGE_OTLP_ENDPOINT` is **set and non-empty**. As of P3-4
-Phase 10E (F-MED-9) the daemon emits a `tracing::warn!` line when
+Phase 10E (F-MED-9) the daemon prints an `eprintln!` line when
 `FORGE_OTLP_ENABLED=true` but the endpoint is empty:
-`OTLP enabled but FORGE_OTLP_ENDPOINT empty; skipping export setup …`.
-Pre-10E, the OTLP layer was silently disabled with no log line — if you
-are on an older daemon, upgrade or grep for that warning when
+`[daemon] WARN: OTLP enabled but FORGE_OTLP_ENDPOINT empty; …`.
+The `eprintln!` (rather than `tracing::warn!`) is intentional — the
+tracing subscriber isn't installed yet at this point in
+`crates/daemon/src/main.rs` so we use the same stderr-line style as
+the surrounding OTLP-enabled / OTLP-init-failed branches. Pre-10E
+the OTLP layer was silently disabled with no log line; if you are
+on an older daemon, upgrade or grep stderr for the warning when
 diagnosing.
 
 ### 2. Jaeger receives spans but service name is wrong
